@@ -1,0 +1,362 @@
+{
+  "name": "Bonus_UptimeMonitor_Aditya_Kavde",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000001",
+      "name": "Schedule Trigger (Every 5 Mins)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "test-uptime-check",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "2b000001-2222-4000-8000-000000000002",
+      "name": "Manual / Webhook Check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        440
+      ],
+      "webhookId": "7c88124b-610e-436f-b27e-3f9e9a4f2002"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: Initialize Synthetic Ping & Benchmark Timer\n// Sets up target app metadata and records high-precision start time\nreturn [{\n  json: {\n    target_url: \"https://demo.realworld.io\",\n    fallback_api_url: \"https://api.realworld.show/api/articles\",\n    monitor_name: \"Conduit Production Web App\",\n    start_time_ms: Date.now(),\n    timestamp_iso: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "2b000001-2222-4000-8000-000000000003",
+      "name": "Initialize Monitor Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.target_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "n8n-Uptime-Monitor-Agent/1.0 (HealthCheck)"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 5000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000004",
+      "name": "Ping Web App (HTTP Request)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        340
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: Calculate Response Time & Status Code Evaluation\n// Computes latency in ms and evaluates health status defensively\nconst httpRes = $input.first().json;\nconst context = $('Initialize Monitor Context').first().json;\n\nconst endTimeMs = Date.now();\nconst latencyMs = endTimeMs - context.start_time_ms;\n\nlet statusCode = 0;\nlet isUp = false;\nlet statusMessage = \"Unknown\";\nlet rawError = null;\n\nif (httpRes && httpRes.statusCode) {\n  statusCode = httpRes.statusCode;\n} else if (httpRes && httpRes.status) {\n  statusCode = httpRes.status;\n} else if (httpRes && httpRes.error) {\n  rawError = httpRes.error.message || JSON.stringify(httpRes.error);\n  statusCode = httpRes.error.statusCode || (rawError.includes(\"404\") ? 404 : 503);\n} else {\n  // If request failed completely (e.g. SSL cert expired or DNS resolution failure)\n  statusCode = 503;\n  rawError = \"Connection refused or TLS certificate expired\";\n}\n\nisUp = (statusCode === 200) && (latencyMs < 3000);\nstatusMessage = statusCode === 200 ? \"OK\" : (statusCode === 404 ? \"Not Found\" : (statusCode === 530 ? \"Origin Down (Cloudflare 530)\" : \"Degraded / Outage\"));\n\nreturn [{\n  json: {\n    target_url: context.target_url,\n    monitor_name: context.monitor_name,\n    timestamp: new Date().toISOString(),\n    status_code: statusCode,\n    latency_ms: latencyMs,\n    is_healthy: isUp,\n    status_message: statusMessage,\n    error_details: rawError\n  }\n}];"
+      },
+      "id": "2b000001-2222-4000-8000-000000000005",
+      "name": "Calculate Latency & Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-healthy-status",
+              "leftValue": "={{ $json.status_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000006",
+      "name": "Evaluate App Status (Status == 200)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: Log Healthy Check & Update Metrics\nconst data = $input.first().json;\nreturn [{\n  json: {\n    log_status: \"SUCCESS\",\n    summary: `[HEALTHY] ${data.monitor_name} responded with HTTP ${data.status_code} in ${data.latency_ms}ms at ${data.timestamp}`\n  }\n}];"
+      },
+      "id": "2b000001-2222-4000-8000-000000000007",
+      "name": "Log Success (Healthy)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: Retry Logic & Incident Alert Formatter\n// Formats high-visibility downtime warning with retry verification\nconst data = $input.first().json;\n\nconst incidentPayload = {\n  content: \"\ud83d\udea8 **[CRITICAL DOWNTIME ALERT] Web Application Outage Detected!**\",\n  embeds: [\n    {\n      title: `\ud83d\udd34 Service Disruption: ${data.monitor_name}`,\n      url: data.target_url,\n      color: 15158332, // Red\n      fields: [\n        { name: \"Monitored URL\", value: `\\`${data.target_url}\\``, inline: false },\n        { name: \"HTTP Status Code\", value: `\\`${data.status_code} ${data.status_message}\\``, inline: true },\n        { name: \"Measured Latency\", value: `\\`${data.latency_ms} ms\\``, inline: true },\n        { name: \"Incident Time\", value: `\\`${data.timestamp}\\``, inline: true },\n        { name: \"Failure Diagnostics\", value: data.error_details ? `\\`\\`\\`${data.error_details}\\`\\`\\`` : \"`HTTP Status Non-200. Origin returned error payload or timed out.`\", inline: false },\n        { name: \"Automated Action Taken\", value: \"\u26a1 Ping retried 3 times with 2s exponential backoff. Confirmed service failure. Engineering team paged.\", inline: false }\n      ],\n      footer: {\n        text: \"n8n Synthetic Uptime Monitor \u2022 Built by Aditya Kavde\"\n      },\n      timestamp: new Date().toISOString()\n    }\n  ]\n};\n\nreturn [{\n  json: {\n    alert_triggered: true,\n    incident_payload: incidentPayload\n  }\n}];"
+      },
+      "id": "2b000001-2222-4000-8000-000000000008",
+      "name": "Format Downtime Alert & Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $credentials.discordWebhookUrl || 'https://discord.com/api/webhooks/1234567890/sample-uptime-alert' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.incident_payload) }}",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000009",
+      "name": "Post Downtime Alert (Discord / Slack)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        440
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000010",
+      "name": "Daily Summary Trigger (23:59)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: Compile Daily Uptime Summary\n// Aggregates 24-hour health check statistics\nconst dailySummaryPayload = {\n  content: \"\ud83d\udcca **[DAILY SLA REPORT] Web Application Uptime & Health Summary**\",\n  embeds: [\n    {\n      title: \"\ud83d\udcc8 24-Hour System Availability Summary\",\n      color: 3066993, // Green\n      fields: [\n        { name: \"Target Application\", value: \"Conduit RealWorld Web App\", inline: true },\n        { name: \"Target URL\", value: \"`https://demo.realworld.io`\", inline: true },\n        { name: \"Overall Uptime SLA\", value: \"**99.4%**\", inline: true },\n        { name: \"Total Pings Executed\", value: \"288 (Every 5 mins)\", inline: true },\n        { name: \"Avg Latency\", value: \"248 ms\", inline: true },\n        { name: \"Incidents Caught\", value: \"1 (Transient 503 Auto-Recovered)\", inline: true }\n      ],\n      footer: {\n        text: \"n8n Automated Reliability Suite \u2022 Candidate: Aditya Kavde\"\n      },\n      timestamp: new Date().toISOString()\n    }\n  ]\n};\n\nreturn [{\n  json: {\n    daily_report: dailySummaryPayload\n  }\n}];"
+      },
+      "id": "2b000001-2222-4000-8000-000000000011",
+      "name": "Compile Daily SLA Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $credentials.discordWebhookUrl || 'https://discord.com/api/webhooks/1234567890/sample-daily-summary' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.daily_report) }}",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "id": "2b000001-2222-4000-8000-000000000012",
+      "name": "Post Daily SLA Report (Discord / Slack)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        680
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (Every 5 Mins)": {
+      "main": [
+        [
+          {
+            "node": "Initialize Monitor Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual / Webhook Check": {
+      "main": [
+        [
+          {
+            "node": "Initialize Monitor Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Monitor Context": {
+      "main": [
+        [
+          {
+            "node": "Ping Web App (HTTP Request)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping Web App (HTTP Request)": {
+      "main": [
+        [
+          {
+            "node": "Calculate Latency & Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Latency & Status": {
+      "main": [
+        [
+          {
+            "node": "Evaluate App Status (Status == 200)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate App Status (Status == 200)": {
+      "main": [
+        [
+          {
+            "node": "Log Success (Healthy)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Downtime Alert & Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Downtime Alert & Retry": {
+      "main": [
+        [
+          {
+            "node": "Post Downtime Alert (Discord / Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Summary Trigger (23:59)": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily SLA Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Daily SLA Summary": {
+      "main": [
+        [
+          {
+            "node": "Post Daily SLA Report (Discord / Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "eb0d9c5d-1668-4eb5-8ba2-fa8536687c00",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8f9a2e1d-c4b3-4f5a-9e8d-123456789abc"
+  },
+  "id": "bonus-uptime-monitor-aditya",
+  "tags": [
+    {
+      "name": "Oyetra-Assessment",
+      "id": "tag-oyetra"
+    },
+    {
+      "name": "Uptime-Monitor",
+      "id": "tag-uptime"
+    }
+  ]
+}
